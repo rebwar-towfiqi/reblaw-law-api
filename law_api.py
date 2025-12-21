@@ -35,22 +35,37 @@ class ArticleResponse(BaseModel):
 
 
 def map_law_name_to_code(law_name: str) -> Optional[str]:
-    """
-    تبدیل نام قانون (فارسی) به ستون code در جدول articles.
-    این را با ساختار واقعی دیتابیس خودت هماهنگ می‌کنیم.
-    """
-    name = law_name.strip().replace("‌", "").replace(" ", "")
-    if "مدنی" in name:
-        return "قانون_مدنی"
+    # normalize
+    name = (law_name or "").strip()
+    name = name.replace("‌", "").replace(" ", "")  # remove ZWNJ & spaces
+    name = name.replace("آئین", "آیین")            # normalize spelling
+
+    # 1) more specific first
     if "آیین" in name and "دادرسی" in name and "مدنی" in name:
         return "قانون_آیین_دادرسی_مدنی"
+
     if "آیین" in name and "دادرسی" in name and "کیفری" in name:
         return "قانون_آیین_دادرسی_کیفری"
+
+    if "اجرای" in name and "احکام" in name and "مدنی" in name:
+        return "قانون_اجرای_احکام_مدنی"
+
     if "تجارت" in name and "لایحه" not in name:
         return "قانون_تجارت"
-    if "مجازات" in name and "کتابپنجم" in name.replace(" ", ""):
+
+    # 2) penal codes
+    if "مجازات" in name and ("تعزیرات" in name or "کتابپنجم" in name or "کتابپنجم" in name.replace(" ", "")):
         return "کتاب_پنجم_قانون_مجازات_اسلامی_(تعزیرات_و_مجازات‌های_بازدارنده)"
+
+    if "مجازات" in name:
+        return "حقوق_جزا"
+
+    # 3) general civil code last
+    if "مدنی" in name:
+        return "قانون_مدنی"
+
     return None
+
 
 
 @app.post("/api/article-by-name", response_model=ArticleResponse)
