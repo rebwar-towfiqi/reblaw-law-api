@@ -111,3 +111,8 @@ def get_article_by_name(req: ArticleByNameRequest):
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
