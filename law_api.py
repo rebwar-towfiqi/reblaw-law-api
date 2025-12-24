@@ -1,15 +1,17 @@
 # law_api.py
-from fastapi import FastAPI
-from pydantic import BaseModel
+import os
 import sqlite3
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
-DB_PATH = "iran_laws.db"  # همین فایل را کنار law_api.py روی Railway قرار می‌دهی
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+
+DB_PATH = os.getenv("DB_PATH", "iran_laws.db")  # فایل DB کنار law_api.py روی Railway
 
 app = FastAPI(
     title="RebLaw Legal API",
-    description="Official law article API for RebLaw (Iranian laws)",
-    version="1.0.0",
+    description="Official law article API + AI Judge score API for RebLaw",
+    version="1.1.0",
 )
 
 
@@ -19,9 +21,12 @@ def get_db():
     return conn
 
 
+# =========================
+# 1) Article By Name API
+# =========================
 class ArticleByNameRequest(BaseModel):
-    law_name: str        # مثال: "قانون مدنی"
-    article_number: int  # مثال: 10
+    law_name: str
+    article_number: int
 
 
 class ArticleResponse(BaseModel):
@@ -35,12 +40,10 @@ class ArticleResponse(BaseModel):
 
 
 def map_law_name_to_code(law_name: str) -> Optional[str]:
-    # normalize
     name = (law_name or "").strip()
-    name = name.replace("‌", "").replace(" ", "")  # remove ZWNJ & spaces
-    name = name.replace("آئین", "آیین")            # normalize spelling
+    name = name.replace("‌", "").replace(" ", "")
+    name = name.replace("آئین", "آیین")
 
-    # 1) more specific first
     if "آیین" in name and "دادرسی" in name and "مدنی" in name:
         return "قانون_آیین_دادرسی_مدنی"
 
@@ -53,33 +56,26 @@ def map_law_name_to_code(law_name: str) -> Optional[str]:
     if "تجارت" in name and "لایحه" not in name:
         return "قانون_تجارت"
 
-    # 2) penal codes
     if "مجازات" in name and ("تعزیرات" in name or "کتابپنجم" in name or "کتابپنجم" in name.replace(" ", "")):
         return "کتاب_پنجم_قانون_مجازات_اسلامی_(تعزیرات_و_مجازات‌های_بازدارنده)"
 
     if "مجازات" in name:
         return "حقوق_جزا"
 
-    # 3) general civil code last
     if "مدنی" in name:
         return "قانون_مدنی"
 
     return None
 
 
-
 @app.post("/api/article-by-name", response_model=ArticleResponse)
 def get_article_by_name(req: ArticleByNameRequest):
     law_code = map_law_name_to_code(req.law_name)
     if not law_code:
-        return ArticleResponse(
-            success=False,
-            error="نام قانون پشتیبانی نمی‌شود یا ناشناخته است.",
-        )
+        return ArticleResponse(success=False, error="نام قانون پشتیبانی نمی‌شود یا ناشناخته است.")
 
     conn = get_db()
     cur = conn.cursor()
-
     cur.execute(
         """
         SELECT code, id, text
@@ -93,10 +89,7 @@ def get_article_by_name(req: ArticleByNameRequest):
     conn.close()
 
     if not row:
-        return ArticleResponse(
-            success=False,
-            error="ماده‌ای با این مشخصات در پایگاه داده یافت نشد.",
-        )
+        return ArticleResponse(success=False, error="ماده‌ای با این مشخصات در پایگاه داده یافت نشد.")
 
     return ArticleResponse(
         success=True,
@@ -108,11 +101,75 @@ def get_article_by_name(req: ArticleByNameRequest):
     )
 
 
+# =========================
+# 2) AI Judge Score API
+# =========================
+
+# پلاگین شما این هدر را (اختیاری) می‌فرستد: X-RebLaw-Game-Secret
+# اگر در Railway مقدار REBLAW_GAME_SECRET را ست کنید، اینجا چک می‌شود.
+def require_secret(x_reblaw_game_secret: Optional[str]):
+    expected = (os.getenv("REBLAW_GAME_SECRET") or "").strip()
+    if expected and (x_reblaw_game_secret or "").strip() != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+class JudgeScoreRequest(BaseModel):
+    # بدنه‌ای که پلاگین می‌فرستد؛ بعضی فیلدها اختیاری‌اند
+    app: Optional[str] = None
+    version: Optional[str] = None
+    lang: Optional[str] = "fa"
+    user: Optional[Dict[str, Any]] = None
+    case: Optional[Dict[str, Any]] = None
+    role: str
+    argument: str
+    rubric: Optional[Dict[str, Any]] = None
+    output: Optional[Dict[str, Any]] = None
+
+    class Config:
+        extra = "allow"  # اگر پلاگین فیلدهای بیشتری فرستاد، خطا ندهد
+
+
+class JudgeFeedback(BaseModel):
+    verdict_fa: str
+    strengths: List[str] = []
+    weaknesses: List[str] = []
+    tips: List[str] = []
+    breakdown: Dict[str, int] = {}
+    confidence: float = 0.0
+
+
+class JudgeScoreResponse(BaseModel):
+    score_total: int
+    feedback: JudgeFeedback
+
+
+@app.post("/api/ai-judge-score", response_model=JudgeScoreResponse)
+def ai_judge_score(
+    req: JudgeScoreRequest,
+    x_reblaw_game_secret: Optional[str] = Header(default=None, alias="X-RebLaw-Game-Secret"),
+):
+    require_secret(x_reblaw_game_secret)
+
+    # فعلاً نمونه پاسخ ثابت (برای تست اتصال)
+    # در گام بعدی همینجا را به “قاضی واقعی” وصل می‌کنیم.
+    return JudgeScoreResponse(
+        score_total=86,
+        feedback=JudgeFeedback(
+            verdict_fa="با توجه به ساختار منطقی و اشاره به ادله، دفاعیه قابل قبول است.",
+            strengths=["ساختار استدلال", "اشاره به قرائن"],
+            weaknesses=["کمبود استناد حقوقی صریح"],
+            tips=["۲ ماده قانونی مرتبط را صریح ذکر کن.", "زنجیره ادله را با ترتیب زمانی بیان کن."],
+            breakdown={"logic": 24, "evidence": 20, "law": 18, "structure": 14, "persuasion": 10},
+            confidence=0.78,
+        ),
+    )
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
+
+
+
 
