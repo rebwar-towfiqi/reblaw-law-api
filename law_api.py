@@ -1,4 +1,6 @@
 # law_api.py
+# -*- coding: utf-8 -*-
+
 import os
 import sqlite3
 from typing import Optional, List, Dict, Any
@@ -6,6 +8,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import JSONResponse
+
 
 
 
@@ -71,30 +74,37 @@ def map_law_name_to_code(law_name: str) -> Optional[str]:
     return None
 
 
-@app.post("/api/ai-judge-score", response_model=JudgeScoreResponse)
-def ai_judge_score(
-    req: JudgeScoreRequest,
-    x_reblaw_game_secret: Optional[str] = Header(default=None, alias="X-RebLaw-Game-Secret"),
-):
-    require_secret(x_reblaw_game_secret)
+@app.post("/api/article-by-name", response_model=ArticleResponse)
+def get_article_by_name(req: ArticleByNameRequest):
+    law_code = map_law_name_to_code(req.law_name)
+    if not law_code:
+        return ArticleResponse(success=False, error="نام قانون پشتیبانی نمی‌شود یا ناشناخته است.")
 
-    payload = {
-        "score_total": 86,
-        "feedback": {
-            "verdict_fa": "با توجه به ساختار منطقی و اشاره به ادله، دفاعیه قابل قبول است.",
-            "strengths": ["ساختار استدلال", "اشاره به قرائن"],
-            "weaknesses": ["کمبود استناد حقوقی صریح"],
-            "tips": ["۲ ماده قانونی مرتبط را صریح ذکر کن.", "زنجیره ادله را با ترتیب زمانی بیان کن."],
-            "breakdown": {"logic": 24, "evidence": 20, "law": 18, "structure": 14, "persuasion": 10},
-            "confidence": 0.78
-        }
-    }
-
-    return JSONResponse(
-        content=payload,
-        media_type="application/json; charset=utf-8"
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT code, id, text
+        FROM articles
+        WHERE code = ? AND id = ?
+        LIMIT 1
+        """,
+        (law_code, req.article_number),
     )
+    row = cur.fetchone()
+    conn.close()
 
+    if not row:
+        return ArticleResponse(success=False, error="ماده‌ای با این مشخصات در پایگاه داده یافت نشد.")
+
+    return ArticleResponse(
+        success=True,
+        law_name=req.law_name,
+        law_code=row["code"],
+        article_number=row["id"],
+        text=row["text"],
+        source="iran_laws.db – RebLaw official database",
+    )
 
 
 # =========================
@@ -146,26 +156,19 @@ def ai_judge_score(
 ):
     require_secret(x_reblaw_game_secret)
 
-    # فعلاً نمونه پاسخ ثابت (برای تست اتصال)
-    # در گام بعدی همینجا را به “قاضی واقعی” وصل می‌کنیم.
-    return JudgeScoreResponse(
-        score_total=86,
-        feedback=JudgeFeedback(
-            verdict_fa="با توجه به ساختار منطقی و اشاره به ادله، دفاعیه قابل قبول است.",
-            strengths=["ساختار استدلال", "اشاره به قرائن"],
-            weaknesses=["کمبود استناد حقوقی صریح"],
-            tips=["۲ ماده قانونی مرتبط را صریح ذکر کن.", "زنجیره ادله را با ترتیب زمانی بیان کن."],
-            breakdown={"logic": 24, "evidence": 20, "law": 18, "structure": 14, "persuasion": 10},
-            confidence=0.78,
-        ),
+    payload = {
+        "score_total": 86,
+        "feedback": {
+            "verdict_fa": "با توجه به ساختار منطقی و اشاره به ادله، دفاعیه قابل قبول است.",
+            "strengths": ["ساختار استدلال", "اشاره به قرائن"],
+            "weaknesses": ["کمبود استناد حقوقی صریح"],
+            "tips": ["۲ ماده قانونی مرتبط را صریح ذکر کن.", "زنجیره ادله را با ترتیب زمانی بیان کن."],
+            "breakdown": {"logic": 24, "evidence": 20, "law": 18, "structure": 14, "persuasion": 10},
+            "confidence": 0.78
+        }
+    }
+
+    return JSONResponse(
+        content=payload,
+        media_type="application/json; charset=utf-8"
     )
-
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
-
-
-
-
-
